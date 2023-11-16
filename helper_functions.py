@@ -83,31 +83,32 @@ def fuel_ratio(
     
     return output
 
-def main_engine_power(me_power:int,
+def main_engine_power(mcr_me:int,
                       me_type:str,
                       pto_dediction:int=0,
                       electrical_eff:float=0.913)->int:
     """Function to calculate Pme
 
     Args:
-        me_power (int): power of main engine in kW
+        mcr_me (int): total ME installed power in kW
         me_type (str): choose either 'diesel'
             'dual_fuel'
             'steam_turbine'
             'diesel_electric'
         pto_dediction (int): corrections applied for pto in kW
-        electrical_eff (float, optional): only used for diesel_electric.
-            total electrical efficiency, see above. Defaults to 0.913.
+        electrical_eff (float, optional): product of electrical efficiency of
+            generator, transformer, converter and motor for diesel electric
+            propulsion. Defaults to 0.913.
 
     Returns:
         int: Pme - main engine power for the EEDI calculation
     """    
     if (me_type == 'diesel') or (me_type == 'dual_fuel'):
-        me_75 = me_power * 0.75
+        me_75 = mcr_me * 0.75
     elif me_type == 'steam_turbine':
-        me_75 = me_power * 0.83
+        me_75 = mcr_me * 0.83
     elif me_type == 'diesel_electric':
-        me_75 = (me_power * 0.83) / electrical_eff
+        me_75 = (mcr_me * 0.83) / electrical_eff
         
     output = me_75 - pto_dediction
     
@@ -169,19 +170,21 @@ def p_pto_calc(p_pto_rated:int,
         
     return output
 
-def shaft_motor_power(p_sm_rated:int,
+def shaft_motor_power(p_sm_rated:float,
                       me_type:str,
+                      mpp:float,
                       gen_efficiency:float=0.93,
                       pti_eff:float=0.97)->float:
     """Calculate shaft motor increase to Pme
 
     Args:
-        p_sm_rated (int): sum of the rated power consumption of all all shaft
+        p_sm_rated (float): sum of the rated power consumption of all all shaft
              motors in Kilowatts
         me_type (str): choose either 'diesel'
             'dual_fuel'
             'steam_turbine'
             'diesel_electric'
+        mpp (float): rated output of the electrical propulsion motors in kW
         gen_efficiency (float, optional): weighted efficiency of the generators
             to provide power to the shaft motors. Defaults to 0.93.
         pti_eff (float, optional): efficiency of the shaft motors.
@@ -192,12 +195,23 @@ def shaft_motor_power(p_sm_rated:int,
     """
     
     standard_list = ['diesel', 'dual_fuel', 'diesel_electric']
-    if me_type in standard_list:
-        p_pti = (p_sm_rated * 0.75) / gen_efficiency
-        p_pti_shaft = p_sm_rated * pti_eff * 0.75
-    elif me_type == 'steam_turbine':
-        p_pti = (p_sm_rated * 0.83) / gen_efficiency
-        p_pti_shaft = p_sm_rated * pti_eff * 0.75
+    if mpp == 0:
+        if me_type in standard_list:
+            p_pti = (p_sm_rated * 0.75) / gen_efficiency
+            p_pti_shaft = p_sm_rated * pti_eff * 0.75
+        elif me_type == 'steam_turbine':
+            p_pti = (p_sm_rated * 0.83) / gen_efficiency
+            p_pti_shaft = p_sm_rated * pti_eff * 0.75
+    elif mpp > 0:
+        if me_type in standard_list:
+            p_pti = (p_sm_rated * 0.75) / (gen_efficiency * pti_eff)
+            p_pti_shaft = (p_sm_rated * 0.75) / (gen_efficiency * pti_eff)
+        elif me_type == 'steam_turbine':
+            p_pti = (p_sm_rated * 0.83) / (gen_efficiency * pti_eff)
+            p_pti_shaft = (p_sm_rated * 0.83) / (gen_efficiency * pti_eff)
+    else:
+        p_pti = 0
+        p_pti_shaft = 0
     # p_pti = (
     #     ((me_type in standard_list)
     #      * (0.75 * p_sm_rated) / gen_efficiency)
@@ -212,13 +226,15 @@ def shaft_motor_power(p_sm_rated:int,
     # )
     return p_pti, p_pti_shaft
 
-def reliqu_addition(cube:int, bor:float,
-                    cop_cooling:float=0.166, r_reliq:float=1)->float:
+def reliqu_addition(cube:int,
+                    bor:float,
+                    cop_cooling:float=0.166,
+                    r_reliq:float=1)->float:
     """calculate additional auxiliary load for reliquefaction system
 
     Args:
         cube (int): gas tank capacity in cubic Metres
-        bor (float): design rate of boil-off gas of entire ship per day
+        bor (float): design rate of boil-off gas of entire ship per day in % per day
         cop_cooling (float): coefficient of design performance of reliquefaction system
         r_reliq (float): ratio of boil-off gas (BOG) to be reliquefied to entire BOG
 
@@ -228,7 +244,7 @@ def reliqu_addition(cube:int, bor:float,
     cop_reliq = (
         (425 * 511)
         / (24 * 3600 * cop_cooling)) #see MEPC.364(79) 2.2.5.6.3 for more info
-    output = cube * bor * cop_reliq * r_reliq
+    output = cube * bor / 100 * cop_reliq * r_reliq
     return output
 
 def fuel_compressor(ship_type:str,
@@ -256,13 +272,7 @@ def fuel_compressor(ship_type:str,
             output = p_me * 0.02
     else:
         output = 0
-    # output = (
-    #     (ship_type == 'lng_carrier')
-    #     * (((me_engine_stroke == 'two_stroke')
-    #     * cop_comp * sfc_me_gas_mode * (p_me / 1000))
-    #     + ((me_engine_stroke == 'four_stroke')
-    #     * 0.02 * p_me))
-    #           )
+        
     return output
 
 def calc_pae(mcr_me:float,
@@ -290,81 +300,101 @@ def calc_pae(mcr_me:float,
     return output
 
 def p_ae_iterative_calc(ship_type:str,
-              me_type:str,
-              me_engine_stroke:str,
-              installed_power:float,
-              add_load:float=0,
-              p_pto_rated:float=0,
-              p_sm_rated:float=0,  
-              sfc_me_gas_mode:float=0,            
-              cube:float=0,
-              bor:float=0)->float:
+                        mcr_me:int,
+                        me_type:str,
+                        p_sm_rated:float,
+                        mpp:float,
+                        p_pto_rated:int,
+                        cube:int,
+                        me_engine_stroke:str,
+                        sfc_me_gas_mode:int,
+                        electrical_eff:float=0.913,
+                        gen_efficiency:float=0.93,
+                        pti_eff:float=0.97,
+                        bor:float=0,
+                        cop_cooling:float=0.166,
+                        r_reliq:float=1,
+                        cop_comp:float=0.33,
+                        add_load:float=0)->float:
     """calculate ae power
 
     Args:
         ship_type (str): ship type
-        me_type (str): choose either 'diesel'
-            'dual_fuel'
-            'steam_turbine'
-            'diesel_electric'
+        mcr_me (int): total ME installed power in kW
+        me_type (str): choose either 'diesel', 'dual_fuel',
+            'steam_turbine' or 'diesel_electric'
+        p_sm_rated (float): sum of the rated power consumption of all
+        mpp (float): rated output of the electrical propulsion motors in kW
+        p_pto_rated (int): p_pto_rated (float): sum of the rated electrical
+        cube (int): gas tank capacity in cubic Metres
         me_engine_stroke (str): type of main engine. options are
             'two_stroke' or 'four_stroke'
-        installed_power (float): total ME installed power in kW
-        add_load (float): additional auxiliary load in kW. Defaults to 0.
-        p_pto_rated (float, optional): p_pto_rated (float): sum of the rated electrical
-        output of all PTOs in Kilowatts. Defaults to 0.
-        p_sm_rated (float, optional): sum of the rated power consumption of all
-        all shaft motors in Kilowatts. Defaults to 0.
-        sfc_main_engine_gas_mode (float): weighted sfc of me in gas mode in g/kWh.
-            Defaults to 0
-        cube (float, optional): gas tank capacity in cubic Metres.
-            Defaults to 0.
-        bor (float, optional): design rate of boil-off gas of entire ship
-            per day. Defaults to 0.
+        sfc_me_gas_mode (int): weighted sfc of me in gas mode in g/kWh
+        electrical_eff (float, optional): product of electrical efficiency of
+            generator, transformer, converter and motor for diesel electric
+            propulsion. Defaults to 0.913.
+        gen_efficiency (float, optional): weighted efficiency of the generators
+            to provide power to the shaft motors. Defaults to 0.93.
+        pti_eff (float, optional): efficiency of the shaft motors. Defaults to 0.97.
+        bor (float): design rate of boil-off gas of entire ship. Defaults to 0.
+        cop_cooling (float, optional): coefficient of design performance of
+            reliquefaction system. Defaults to 0.166.
+        r_reliq (float, optional): ratio of boil-off gas (BOG) to be
+            reliquefied to entire BOG. Defaults to 1.
+        cop_comp (float, optional): design power performance of compressors in kWhr/kg.
+            Defaults to 0.33.
+        add_load (float, optional): additional auxiliary load in kW. Defaults to 0.
 
     Returns:
         float: ae power with additional ae loads such as reliq system
-    """    
-    
+    """
     # This is an interative loop when an lng carrier with compressors for high
-    # pressure gas fuel. If not applicable, the loop still runs but no change
-    # between iterations occur
+    # or low pressure gas fuel. If not applicable, the loop still runs but no
+    # change between iterations occur
     
     # Initiate loop
-    pme = main_engine_power(me_power = installed_power,
-                            me_type = me_type)
-
-
-    for i in range(5):
-        #calculate compressor power for high pressure gas fuel supply
-        compressors = fuel_compressor(ship_type = ship_type,
-                                    me_engine_stroke = me_engine_stroke,
-                                    sfc_me_gas_mode = sfc_me_gas_mode,
-                                    p_me = pme)
+    if (me_type == 'diesel_electric') and (mpp > 0):
+        mcr = mpp.copy()
+    else:
+        mcr = mcr_me.copy()
         
+    pme = main_engine_power(mcr_me = mcr,
+                            me_type = me_type,
+                            pto_dediction = 0,
+                            electrical_eff = electrical_eff)
+    
+    for i in range(5):
         #calculate reliquefaction plant power
         reliq = reliqu_addition(cube = cube,
-                                bor = bor)
-        
+                                bor = bor,
+                                cop_cooling = cop_cooling,
+                                r_reliq = r_reliq)
+        #calculate compressor power for high or low pressure gas fuel supply
+        compressors = fuel_compressor(ship_type = ship_type,
+                                      me_engine_stroke = me_engine_stroke,
+                                      sfc_me_gas_mode = sfc_me_gas_mode,
+                                      p_me = pme,
+                                      cop_comp = cop_comp)
         #calculate shaft motor power (can be equal to 0)
         p_sm = shaft_motor_power(p_sm_rated = p_sm_rated,
-                                me_type = me_type)[0]
-        
+                                 me_type = me_type,
+                                 mpp = mpp,
+                                 gen_efficiency = gen_efficiency,
+                                 pti_eff = pti_eff)[0]
         #calculate pae
-        pae = calc_pae(mcr_me = installed_power,
-                    p_pti = p_sm) + compressors + reliq + add_load
-        
+        pae = calc_pae(mcr_me = mcr,
+                       p_pti = p_sm) + compressors + reliq + add_load
         #calculate reduction to pme from shaft generator
         shaft_gen_reduct_to_me_kw = shaft_gen_reduc_to_me(pae=pae,
-                            p_pto=p_pto_rated,
-                            me_type=me_type)
-        
+                                                          p_pto=p_pto_rated,
+                                                          me_type=me_type)
         #calculate pme
-        pme = main_engine_power(me_power = installed_power,
+        pme = main_engine_power(mcr_me = mcr,
                                 me_type = me_type,
-                                pto_dediction=shaft_gen_reduct_to_me_kw)
-                
-    return pae
+                                pto_dediction = shaft_gen_reduct_to_me_kw,
+                                electrical_eff = electrical_eff)
+    return pae        
+
 
 def ice_class_correction(ship_type:str,
                          ice_class:str,
@@ -1372,7 +1402,7 @@ def empty_series(x):
 
 def load_variables(inpt):
     #drop rows with me or ae terms. Keep only columns required for analysis
-    df_inpt = inpt.iloc[:77].dropna(subset='ship parameters')
+    df_inpt = inpt.iloc[:87].dropna(subset='ship parameters')
     df_inpt = df_inpt[['ship parameters', 'value']]
 
     #drop csv titles denoted with '#' at the start
@@ -1380,17 +1410,20 @@ def load_variables(inpt):
 
     #create wide dataframe to set dtypes for each parameter
     df_inpt = df_inpt.set_index('ship parameters').T
-
-    float_list = ['v_ref', 'dwt', 'lpp', 'b', 'ds', 'disp_m3',
-                'p_pto_rated', 'p_sm_rated', 'speed_power_a',
-                'speed_power_b', 'speed_power_c','v_lng', 'v_hfo',
-                'v_mdo', 'v_lfo', 'k_lng', 'k_hfo', 'k_mdo', 
-                'k_lfo', 'lwt_ref', 'lwt_enhance', 'lwt_csr',
-                'dwt_csr', 'cube', 'gt', 'number_of_cranes',
-                'swl_crane', 'reach_crane', 'side_loader_weight',
-                'roro_weight', 'p_p_eff_al',
-                'p_ae_eff_al', 'w_e', 'eta_g', 'p_ae_eff_loss',
-                'f_temp', 'p_max', 'etad_gen', 'n']
+ 
+    float_list = ['v_ref', 'dwt', 'mpp', 'electrical_eff', 'cube',
+                  'bor', 'cop_cooling', 'r_reliq', 'cop_comp', 'lpp',
+                  'b', 'ds', 'disp_m3', 'p_pto_rated', 'p_sm_rated',
+                  'hload', 'gen_efficiency', 'pti_eff',
+                  'v_ref_override', 'speed_power_a', 'speed_power_b',
+                  'speed_power_c', 'v_lng', 'v_hfo', 'v_mdo', 'v_lfo',
+                  'k_lng', 'k_hfo', 'k_mdo', 'k_lfo', 'lwt_ref',
+                  'lwt_enhance', 'lwt_csr', 'dwt_csr', 'gt',
+                  'number_of_cranes', 'swl_crane', 'reach_crane',
+                  'side_loader_weight', 'roro_weight', 'p_p_eff_al',
+                  'p_ae_eff_al', 'w_e', 'eta_g', 'p_ae_eff_loss',
+                  'f_temp', 'p_max', 'etad_gen', 'n', 'f_rad',
+                  'l_others']
     str_list = ['ship_type', 'propulsion_type', 'me_engine_stroke',
                 'speed_power_equ', 'ice_class', 'marpol_annex']
     bool_list = ['propulsion_redundancy', 'csr', 'diesel_direct_drive']
@@ -1403,7 +1436,7 @@ def load_variables(inpt):
     return df_inpt
 
 def load_cf_dict(inpt):
-    df_cf = inpt.iloc[102:].copy()
+    df_cf = inpt.iloc[112:].copy()
     df_cf.columns = df_cf.iloc[0]
     df_cf = df_cf[1:].reset_index(drop=True)
     df_cf.columns.name = None
@@ -1420,7 +1453,7 @@ def load_me_data(inpt, df_inpt):
     float_vals_eng = ['mcr', 'sfc_liquid_fuel', 'sfc_pilot_fuel', 'sfc_gas_fuel_kj']
 
     #create df_me df, rename columns and reset index
-    df_me = inpt.iloc[79:89].copy()
+    df_me = inpt.iloc[89:99].copy()
     df_me.columns = df_me.iloc[0]
     df_me = df_me[1:].reset_index(drop=True)
     df_me.columns.name = None
@@ -1439,14 +1472,18 @@ def load_me_data(inpt, df_inpt):
 
     try: #calc when engine limitation is in place
         for i in df_me.loc[df_me['limited_power']>0].index:
-            df_me.loc[i,'p_me'] = main_engine_power(me_power = df_me.loc[i,'limited_power'],
+            df_me.loc[i,'p_me'] = main_engine_power(mcr_me = df_me.loc[i,'limited_power'],
                                                     me_type = df_inpt['propulsion_type'].item())
     except:
         pass
     try: #calc when engine limitation is not in place
         for i in df_me.loc[df_me['limited_power']==0].index:
-            df_me.loc[i,'p_me'] = main_engine_power(me_power = df_me.loc[i,'mcr'],
+            df_me.loc[i,'p_me'] = main_engine_power(mcr_me = df_me.loc[i,'mcr'],
                                                     me_type = df_inpt['propulsion_type'].item())
+        # if the ship is a gas carrier with propulsion motors
+        if (df_inpt['ship_type'].item() == 'lng_carrier') and (df_inpt['mpp'].item() > 0):
+            df_me.loc[:,'p_me'] = main_engine_power(mcr_me = df_inpt['mpp'].item(),
+                                                    me_type = df_inpt['propulsion_type'].item()) / len(df_me)
     except:
         pass
     
@@ -1459,7 +1496,7 @@ def load_ae_data(inpt):
     float_vals_eng = ['mcr', 'sfc_liquid_fuel', 'sfc_pilot_fuel', 'sfc_gas_fuel_kj']
     
     #create df_ae df, rename columns and reset index from df_inpt
-    df_ae = inpt.iloc[91:100].copy()
+    df_ae = inpt.iloc[101:110].copy()
     df_ae.columns = df_ae.iloc[0]
     df_ae = df_ae[1:].reset_index(drop=True)
     df_ae.columns.name = None
@@ -1508,8 +1545,8 @@ def calculate_cf(df_me, df_ae, cf_dict):
 def pto_pae_ratio(df_inpt, df_me, df_ae, p_ae, p_pto):
     #initiate ratio for steam turbine case
     standard_propulsion = ['diesel', 'dual_fuel', 'diesel_electric']
-    pto_ratio = (((df_inpt['propulsion_type'].iloc[0] == 'steam_turbine') * 0.85)
-                + ((df_inpt['propulsion_type'].iloc[0] in standard_propulsion) * 0.75))
+    pto_ratio = (((df_inpt['propulsion_type'].item() == 'steam_turbine') * 0.85)
+                + ((df_inpt['propulsion_type'].item() in standard_propulsion) * 0.75))
 
     #calculate pto power and p_ae power for calculation
     if (pto_ratio * p_pto) < p_ae: #p_ae is taken as a ratio of p_ae - p_pto
@@ -1531,26 +1568,26 @@ def pto_pae_ratio(df_inpt, df_me, df_ae, p_ae, p_pto):
     return p_pto_remove_me, p_ae_calc
 
 def update_vref(df_inpt, p_me_deduct):
-    if (df_inpt['p_sm_rated'].iloc[0] > 0) or (df_inpt['p_pto_rated'].iloc[0] > 0):
-        if df_inpt['v_ref_override'].iloc[0] > 0:
-            v_ref = df_inpt['v_ref_override'].iloc[0]
+    if (df_inpt['p_sm_rated'].item() > 0) or (df_inpt['p_pto_rated'].item() > 0):
+        if df_inpt['v_ref_override'].item() > 0:
+            v_ref = df_inpt['v_ref_override'].item()
             
-        elif df_inpt['speed_power_equ'].iloc[0] == 'p=a*v^b':
-            v_ref = ((p_me_deduct / df_inpt['speed_power_a'].iloc[0]) 
-                    ** (1 / df_inpt['speed_power_b'].iloc[0]))
+        elif df_inpt['speed_power_equ'].item() == 'p=a*v^b':
+            v_ref = ((p_me_deduct / df_inpt['speed_power_a'].item()) 
+                    ** (1 / df_inpt['speed_power_b'].item()))
             
-        elif df_inpt['speed_power_equ'].iloc[0] == 'p=a*v^3+b':
-            v_ref = ((p_me_deduct - df_inpt['speed_power_a'].iloc[0]) ** (1 / 3)
-                    / df_inpt['speed_power_b'].iloc[0] ** (1 / 3))
+        elif df_inpt['speed_power_equ'].item() == 'p=a*v^3+b':
+            v_ref = ((p_me_deduct - df_inpt['speed_power_a'].item()) ** (1 / 3)
+                    / df_inpt['speed_power_b'].item() ** (1 / 3))
             
-        elif df_inpt['speed_power_equ'].iloc[0] == 'p=a*v^b+c':
-            v_ref = ((p_me_deduct - df_inpt['speed_power_a'].iloc[0]) 
-                    ** (1 / df_inpt['speed_power_b'].iloc[0])
-                    / df_inpt['speed_power_c'].iloc[0] 
-                    ** (1 / df_inpt['speed_power_b'].iloc[0]))
+        elif df_inpt['speed_power_equ'].item() == 'p=a*v^b+c':
+            v_ref = ((p_me_deduct - df_inpt['speed_power_a'].item()) 
+                    ** (1 / df_inpt['speed_power_b'].item())
+                    / df_inpt['speed_power_c'].item() 
+                    ** (1 / df_inpt['speed_power_b'].item()))
         
     else:
-        v_ref = df_inpt['v_ref'].iloc[0]
+        v_ref = df_inpt['v_ref'].item()
     
     return v_ref
 
@@ -1574,8 +1611,8 @@ def fuel_ratio_calc(df_inpt, df_me, df_ae):
         fd_gas = 0
     else:
         fd_gas = fuel_ratio(
-            v_mdo=df_inpt['v_mdo'].iloc[0], v_lfo=df_inpt['v_lfo'].iloc[0],
-            v_hfo=df_inpt['v_hfo'].iloc[0], v_lng=df_inpt['v_lng'].iloc[0],
+            v_mdo=df_inpt['v_mdo'].item(), v_lfo=df_inpt['v_lfo'].item(),
+            v_hfo=df_inpt['v_hfo'].item(), v_lng=df_inpt['v_lng'].item(),
             power_mdo=me_mdo + ae_mdo,
             power_lfo=me_lfo + ae_lfo,
             power_hfo=me_hfo + ae_hfo,
